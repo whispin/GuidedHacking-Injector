@@ -149,10 +149,17 @@ jobs:
       with:
         arch: ${{ matrix.platform }}
 
-    - name: Setup .NET Framework
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '4.8.x'
+    - name: Verify build environment
+      run: |
+        echo "=== Build Environment Information ==="
+        echo "MSBuild version:"
+        msbuild -version
+        echo ""
+        echo "Available .NET Framework versions:"
+        Get-ChildItem "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework" -Directory -ErrorAction SilentlyContinue | Select-Object Name
+        echo ""
+        echo "Visual Studio components:"
+        Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\MSBuild" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
 
     - name: Install Qt 5.15.2
       uses: jurplel/install-qt-action@v3
@@ -195,11 +202,25 @@ jobs:
 
     - name: Setup Qt environment variables
       run: |
-        $qtPath = "${{ matrix.configuration == 'Static' && matrix.platform == 'x64' && 'C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64' || env.Qt5_Dir }}"
-        echo "Qt5_DIR=$qtPath" >> $env:GITHUB_ENV
-        echo "CMAKE_PREFIX_PATH=$qtPath" >> $env:GITHUB_ENV
-        echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
-        echo "$qtPath\bin" >> $env:GITHUB_PATH
+        if ("${{ matrix.configuration }}" -eq "Static" -and "${{ matrix.platform }}" -eq "x64") {
+          $qtPath = "C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64"
+          echo "Using static Qt path: $qtPath"
+        } else {
+          $qtPath = $env:Qt5_Dir
+          echo "Using dynamic Qt path: $qtPath"
+        }
+        
+        if (Test-Path $qtPath) {
+          echo "Qt5_DIR=$qtPath" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$qtPath" >> $env:GITHUB_ENV
+          echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
+          echo "$qtPath\bin" >> $env:GITHUB_PATH
+          echo "Qt environment configured successfully"
+        } else {
+          echo "Warning: Qt path not found: $qtPath"
+          echo "Available Qt installations:"
+          Get-ChildItem "C:\Qt" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
+        }
 
     - name: Build GUI Solution
       working-directory: gui
@@ -208,10 +229,18 @@ jobs:
         $config = "${{ matrix.configuration }}"
         $msbuildPlatform = if ($platform -eq "x86") { "Win32" } else { "x64" }
         
-        echo "Building GUI with configuration: $config, platform: $msbuildPlatform"
+        echo "=== GUI Build Information ==="
+        echo "Configuration: $config"
+        echo "Platform: $msbuildPlatform"
+        echo "Qt Directory: $env:QTDIR"
+        echo ""
         
-        # Build the solution
-        msbuild "GH Injector GUI.sln" /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false /m
+        echo "Available solution files:"
+        Get-ChildItem "*.sln" | Select-Object Name
+        echo ""
+        
+        echo "Building GUI solution..."
+        msbuild "GH Injector GUI.sln" /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false /m /verbosity:minimal
 
     - name: List GUI build output
       working-directory: gui
