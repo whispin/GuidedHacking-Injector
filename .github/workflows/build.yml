@@ -1,4 +1,4 @@
-name: Build GH Injector Library
+name: Build GH Injector Library and GUI
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-library:
     runs-on: windows-latest
 
     strategy:
@@ -28,7 +28,7 @@ jobs:
       with:
         arch: ${{ matrix.platform }}
 
-    - name: Build Solution
+    - name: Build Library Solution
       run: |
         # Try building projects individually for x86 to isolate issues
         if ("${{ matrix.platform }}" -eq "x86") {
@@ -44,40 +44,181 @@ jobs:
           msbuild "GH Injector Library.sln" /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }} /m
         }
 
-    - name: List build output
+    - name: List library build output
       run: |
-        echo "Listing build output directories:"
+        echo "Listing library build output directories:"
         Get-ChildItem -Recurse -Include "*.dll","*.exe" | Select-Object FullName
-        echo "Current directory contents:"
-        Get-ChildItem -Recurse | Where-Object { $_.PSIsContainer } | Select-Object FullName
 
-    - name: Prepare artifacts
+    - name: Prepare library artifacts
       run: |
         $platformDir = "${{ matrix.platform }}"
         $configDir = "${{ matrix.configuration }}"
         
         # Create artifact directory
-        mkdir -Force "artifacts"
+        mkdir -Force "library-artifacts"
         
         # Find and copy all built files
         Get-ChildItem -Recurse -Include "*.dll","*.exe" | ForEach-Object {
           $relativePath = $_.FullName.Replace((Get-Location).Path + "\", "")
           echo "Found: $relativePath"
-          Copy-Item $_.FullName "artifacts\" -Force
+          Copy-Item $_.FullName "library-artifacts\" -Force
         }
         
-        echo "Artifacts directory contents:"
-        Get-ChildItem "artifacts" | Select-Object Name
+        echo "Library artifacts directory contents:"
+        Get-ChildItem "library-artifacts" | Select-Object Name
 
-    - name: Upload Build Artifacts
+    - name: Upload Library Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: GH-Injector-${{ matrix.configuration }}-${{ matrix.platform }}
-        path: artifacts/
+        name: GH-Injector-Library-${{ matrix.configuration }}-${{ matrix.platform }}
+        path: library-artifacts/
+        if-no-files-found: warn
+
+  build-gui:
+    runs-on: windows-latest
+    needs: build-library
+
+    strategy:
+      matrix:
+        configuration: [Release, Static]
+        platform: [x86, x64]
+
+    steps:
+    - name: Checkout GUI repository
+      uses: actions/checkout@v4
+      with:
+        repository: guided-hacking/GH-Injector-GUI
+        path: gui
+
+    - name: Checkout Library repository
+      uses: actions/checkout@v4
+      with:
+        path: library
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Setup VS Dev Environment
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.platform }}
+
+    - name: Setup .NET Framework
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '4.8.x'
+
+    - name: Install Qt 5.15.2
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '5.15.2'
+        host: 'windows'
+        target: 'desktop'
+        arch: ${{ matrix.platform == 'x86' && 'win32_msvc2019' || 'win64_msvc2019_64' }}
+        modules: 'qtcharts qtdatavis3d'
+        cache: true
+
+    - name: Download static Qt build (x64 only)
+      if: matrix.configuration == 'Static' && matrix.platform == 'x64'
+      run: |
+        echo "Downloading static Qt build..."
+        $url = "https://github.com/martinrotter/qt5-minimalistic-builds/releases/download/5.15.2/qt-5.15.2-static-msvc2019-x86_64.7z"
+        $output = "qt-static.7z"
+        Invoke-WebRequest -Uri $url -OutFile $output
+        
+        echo "Extracting static Qt build..."
+        7z x $output -o"C:\Qt\5.15.2\"
+        
+        echo "Static Qt extracted to C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64"
+
+    - name: Download library artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: GH-Injector-Library-${{ matrix.configuration == 'Static' && 'Release' || matrix.configuration }}-${{ matrix.platform }}
+        path: library-binaries
+
+    - name: Copy library binaries to GUI project
+      run: |
+        echo "Copying library binaries to GUI project..."
+        if (Test-Path "library-binaries") {
+          Copy-Item "library-binaries\*" "gui\" -Recurse -Force
+          echo "Library binaries copied successfully"
+        } else {
+          echo "Warning: Library binaries not found"
+        }
+
+    - name: Setup Qt environment variables
+      run: |
+        $qtPath = "${{ matrix.configuration == 'Static' && matrix.platform == 'x64' && 'C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64' || env.Qt5_Dir }}"
+        echo "Qt5_DIR=$qtPath" >> $env:GITHUB_ENV
+        echo "CMAKE_PREFIX_PATH=$qtPath" >> $env:GITHUB_ENV
+        echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
+        echo "$qtPath\bin" >> $env:GITHUB_PATH
+
+    - name: Build GUI Solution
+      working-directory: gui
+      run: |
+        $platform = "${{ matrix.platform }}"
+        $config = "${{ matrix.configuration }}"
+        $msbuildPlatform = if ($platform -eq "x86") { "Win32" } else { "x64" }
+        
+        echo "Building GUI with configuration: $config, platform: $msbuildPlatform"
+        
+        # Build the solution
+        msbuild "GH Injector GUI.sln" /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false /m
+
+    - name: List GUI build output
+      working-directory: gui
+      run: |
+        echo "Listing GUI build output:"
+        Get-ChildItem -Recurse -Include "*.exe","*.dll" | Select-Object FullName
+
+    - name: Prepare GUI artifacts
+      working-directory: gui
+      run: |
+        $platform = "${{ matrix.platform }}"
+        $config = "${{ matrix.configuration }}"
+        
+        # Create artifact directory
+        mkdir -Force "gui-artifacts"
+        
+        # Find and copy GUI executables and DLLs
+        Get-ChildItem -Recurse -Include "*.exe","*.dll" | Where-Object { 
+          $_.DirectoryName -like "*$config*" -or $_.DirectoryName -like "*Release*" -or $_.DirectoryName -like "*Debug*"
+        } | ForEach-Object {
+          $relativePath = $_.FullName.Replace((Get-Location).Path + "\", "")
+          echo "Found GUI file: $relativePath"
+          Copy-Item $_.FullName "gui-artifacts\" -Force
+        }
+        
+        # Copy Qt DLLs for non-static builds
+        if ("$config" -ne "Static") {
+          echo "Copying Qt runtime DLLs..."
+          $qtBinPath = "$env:QTDIR\bin"
+          if (Test-Path $qtBinPath) {
+            $qtDlls = @("Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll", "Qt5Network.dll")
+            foreach ($dll in $qtDlls) {
+              $dllPath = Join-Path $qtBinPath $dll
+              if (Test-Path $dllPath) {
+                Copy-Item $dllPath "gui-artifacts\" -Force
+                echo "Copied Qt DLL: $dll"
+              }
+            }
+          }
+        }
+        
+        echo "GUI artifacts directory contents:"
+        Get-ChildItem "gui-artifacts" | Select-Object Name
+
+    - name: Upload GUI Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: GH-Injector-GUI-${{ matrix.configuration }}-${{ matrix.platform }}
+        path: gui/gui-artifacts/
         if-no-files-found: warn
 
   package:
-    needs: build
+    needs: [build-library, build-gui]
     runs-on: windows-latest
     if: success()
 
@@ -85,21 +226,42 @@ jobs:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
 
-    - name: Create release package
+    - name: Create complete release package
       run: |
         mkdir release-package
         
-        # Copy x86 files
-        if (Test-Path "GH-Injector-Release-x86") {
-          mkdir "release-package/x86"
-          Copy-Item "GH-Injector-Release-x86/*" "release-package/x86/" -Recurse
+        # Create platform directories
+        mkdir "release-package/x86"
+        mkdir "release-package/x64"
+        
+        # Copy library files
+        if (Test-Path "GH-Injector-Library-Release-x86") {
+          Copy-Item "GH-Injector-Library-Release-x86/*" "release-package/x86/" -Recurse -Force
+        }
+        if (Test-Path "GH-Injector-Library-Release-x64") {
+          Copy-Item "GH-Injector-Library-Release-x64/*" "release-package/x64/" -Recurse -Force
         }
         
-        # Copy x64 files  
-        if (Test-Path "GH-Injector-Release-x64") {
-          mkdir "release-package/x64"
-          Copy-Item "GH-Injector-Release-x64/*" "release-package/x64/" -Recurse
+        # Copy GUI files (Release builds)
+        if (Test-Path "GH-Injector-GUI-Release-x86") {
+          Copy-Item "GH-Injector-GUI-Release-x86/*" "release-package/x86/" -Recurse -Force
         }
+        if (Test-Path "GH-Injector-GUI-Release-x64") {
+          Copy-Item "GH-Injector-GUI-Release-x64/*" "release-package/x64/" -Recurse -Force
+        }
+        
+        # Copy static GUI builds (standalone executables)
+        if (Test-Path "GH-Injector-GUI-Static-x86") {
+          mkdir "release-package/x86-static"
+          Copy-Item "GH-Injector-GUI-Static-x86/*" "release-package/x86-static/" -Recurse -Force
+        }
+        if (Test-Path "GH-Injector-GUI-Static-x64") {
+          mkdir "release-package/x64-static"
+          Copy-Item "GH-Injector-GUI-Static-x64/*" "release-package/x64-static/" -Recurse -Force
+        }
+        
+        echo "Complete package structure:"
+        Get-ChildItem "release-package" -Recurse | Select-Object FullName
 
     - name: Upload Complete Package
       uses: actions/upload-artifact@v4
