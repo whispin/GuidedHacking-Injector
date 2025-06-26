@@ -30,7 +30,19 @@ jobs:
 
     - name: Build Solution
       run: |
-        msbuild "GH Injector Library.sln" /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }} /m
+        # Try building projects individually for x86 to isolate issues
+        if ("${{ matrix.platform }}" -eq "x86") {
+          echo "Building GH Injector Library project..."
+          msbuild "GH Injector Library\GH Injector Library.vcxproj" /p:Configuration=${{ matrix.configuration }} /p:Platform=Win32 /p:WholeProgramOptimization=false /p:TreatWarningAsError=false
+          
+          echo "Building GH Injector DNP project..."
+          msbuild "GH Injector DNP\GH Injector DNP.vcxproj" /p:Configuration=${{ matrix.configuration }} /p:Platform=Win32 /p:WholeProgramOptimization=false /p:TreatWarningAsError=false
+          
+          echo "Building GH Injector SM project..."
+          msbuild "GH Injector SM\GH Injector SM\GH Injector SM.vcxproj" /p:Configuration=${{ matrix.configuration }} /p:Platform=Win32 /p:WholeProgramOptimization=false /p:TreatWarningAsError=false
+        } else {
+          msbuild "GH Injector Library.sln" /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }} /m
+        }
 
     - name: List build output
       run: |
