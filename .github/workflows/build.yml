@@ -358,26 +358,24 @@ jobs:
           }
           
           # Create a custom Qt props file for MSBuild if needed
-          $propsContent = @"
-<?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <PropertyGroup>
-    <QtInstall>$qtPath</QtInstall>
-    <QtToolsPath>$qtPath\bin</QtToolsPath>
-    <QtIncludePath>$qtPath\include</QtIncludePath>
-    <QtLibraryPath>$qtPath\lib</QtLibraryPath>
-  </PropertyGroup>
-  <ItemDefinitionGroup>
-    <ClCompile>
-      <AdditionalIncludeDirectories>$qtPath\include;$qtPath\include\QtCore;$qtPath\include\QtGui;$qtPath\include\QtWidgets;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-    <Link>
-      <AdditionalLibraryDirectories>$qtPath\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-    </Link>
-  </ItemDefinitionGroup>
-</Project>
-"@
+          $propsContent = '<?xml version="1.0" encoding="utf-8"?>' + "`n"
+          $propsContent += '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' + "`n"
+          $propsContent += '  <PropertyGroup>' + "`n"
+          $propsContent += "    <QtInstall>$qtPath</QtInstall>" + "`n"
+          $propsContent += "    <QtToolsPath>$qtPath\bin</QtToolsPath>" + "`n"
+          $propsContent += "    <QtIncludePath>$qtPath\include</QtIncludePath>" + "`n"
+          $propsContent += "    <QtLibraryPath>$qtPath\lib</QtLibraryPath>" + "`n"
+          $propsContent += '  </PropertyGroup>' + "`n"
+          $propsContent += '  <ItemDefinitionGroup>' + "`n"
+          $propsContent += '    <ClCompile>' + "`n"
+          $propsContent += "      <AdditionalIncludeDirectories>$qtPath\include;$qtPath\include\QtCore;$qtPath\include\QtGui;$qtPath\include\QtWidgets;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>" + "`n"
+          $propsContent += '      <PreprocessorDefinitions>QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>' + "`n"
+          $propsContent += '    </ClCompile>' + "`n"
+          $propsContent += '    <Link>' + "`n"
+          $propsContent += "      <AdditionalLibraryDirectories>$qtPath\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>" + "`n"
+          $propsContent += '    </Link>' + "`n"
+          $propsContent += '  </ItemDefinitionGroup>' + "`n"
+          $propsContent += '</Project>'
           
           Set-Content "qt-custom.props" -Value $propsContent
           echo "Created custom Qt props file: qt-custom.props"
