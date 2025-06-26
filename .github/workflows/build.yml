@@ -164,6 +164,11 @@ jobs:
         echo "Visual Studio components:"
         Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\MSBuild" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
 
+    - name: Setup NuGet
+      uses: nuget/setup-nuget@v2
+      with:
+        nuget-version: 'latest'
+
     - name: Install Qt 5.15.2
       uses: jurplel/install-qt-action@v3
       with:
@@ -193,6 +198,95 @@ jobs:
         name: GH-Injector-Library-${{ matrix.configuration == 'Static' && 'Release' || matrix.configuration }}-${{ matrix.platform }}
         path: library-binaries
 
+    - name: Fix .NET target framework
+      working-directory: gui
+      run: |
+        echo "Checking .NET project target framework..."
+        if (Test-Path "GH .NET Parser\GH .NET Parser.csproj") {
+          echo "Current .NET Parser project content:"
+          Get-Content "GH .NET Parser\GH .NET Parser.csproj" | Select-Object -First 10
+          
+          # Update target framework from net7.0 to net8.0 if needed
+          $content = Get-Content "GH .NET Parser\GH .NET Parser.csproj" -Raw
+          if ($content -match "net7\.0") {
+            echo "Updating target framework from net7.0 to net8.0..."
+            $content = $content -replace "net7\.0", "net8.0"
+            Set-Content "GH .NET Parser\GH .NET Parser.csproj" -Value $content
+            echo "Updated project file:"
+            Get-Content "GH .NET Parser\GH .NET Parser.csproj" | Select-Object -First 10
+          }
+        }
+
+    - name: Restore NuGet packages
+      working-directory: gui
+      run: |
+        echo "Restoring NuGet packages for .NET projects..."
+        if (Test-Path "GH .NET Parser\GH .NET Parser.csproj") {
+          echo "Restoring packages for GH .NET Parser..."
+          dotnet restore "GH .NET Parser\GH .NET Parser.csproj"
+        }
+        
+        echo "Restoring packages for entire solution..."
+        nuget restore "GH Injector GUI.sln"
+
+    - name: Verify Qt installation
+      run: |
+        echo "=== Qt Installation Verification ==="
+        echo "QTDIR: $env:QTDIR"
+        echo "Qt5_Dir: $env:Qt5_Dir"
+        echo ""
+        
+        if ($env:QTDIR -and (Test-Path $env:QTDIR)) {
+          echo "Qt installation found at: $env:QTDIR"
+          echo "Qt include directory:"
+          if (Test-Path "$env:QTDIR\include") {
+            Get-ChildItem "$env:QTDIR\include" -Directory | Select-Object Name | Format-Table -AutoSize
+          } else {
+            echo "Qt include directory not found"
+          }
+          echo ""
+          echo "Qt lib directory:"
+          if (Test-Path "$env:QTDIR\lib") {
+            Get-ChildItem "$env:QTDIR\lib" -Include "*.lib" | Select-Object Name | Format-Table -AutoSize
+          } else {
+            echo "Qt lib directory not found"
+          }
+        } else {
+          echo "Qt installation not found or QTDIR not set"
+          echo "Available Qt installations:"
+          Get-ChildItem "C:\Qt" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
+        }
+
+    - name: Configure Qt for MSBuild
+      working-directory: gui
+      run: |
+        echo "=== Configuring Qt for MSBuild ==="
+        
+        # Check if there are any .vcxproj files that need Qt configuration
+        $qtProjects = Get-ChildItem -Recurse -Include "*.vcxproj" | Where-Object { 
+          (Get-Content $_.FullName -Raw) -match "Qt" 
+        }
+        
+        foreach ($project in $qtProjects) {
+          echo "Found Qt project: $($project.Name)"
+          echo "Project path: $($project.FullName)"
+          
+          # Check if project has Qt configuration
+          $content = Get-Content $project.FullName -Raw
+          if ($content -match "QtInstall") {
+            echo "Project already has Qt configuration"
+          } else {
+            echo "Project may need Qt configuration"
+          }
+        }
+        
+        # Set additional Qt environment variables for MSBuild
+        echo "Setting additional Qt environment variables..."
+        echo "QT_INSTALL_PREFIX=$env:QTDIR" >> $env:GITHUB_ENV
+        echo "QT_INSTALL_BINS=$env:QTDIR\bin" >> $env:GITHUB_ENV
+        echo "QT_INSTALL_INCLUDES=$env:QTDIR\include" >> $env:GITHUB_ENV
+        echo "QT_INSTALL_LIBS=$env:QTDIR\lib" >> $env:GITHUB_ENV
+
     - name: Copy library binaries to GUI project
       run: |
         echo "Copying library binaries to GUI project..."
@@ -217,8 +311,20 @@ jobs:
           echo "Qt5_DIR=$qtPath" >> $env:GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=$qtPath" >> $env:GITHUB_ENV
           echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
+          echo "QT_DIR=$qtPath" >> $env:GITHUB_ENV
+          echo "Qt5Core_DIR=$qtPath\lib\cmake\Qt5Core" >> $env:GITHUB_ENV
+          echo "Qt5Gui_DIR=$qtPath\lib\cmake\Qt5Gui" >> $env:GITHUB_ENV
+          echo "Qt5Widgets_DIR=$qtPath\lib\cmake\Qt5Widgets" >> $env:GITHUB_ENV
           echo "$qtPath\bin" >> $env:GITHUB_PATH
+          
+          # Add Qt include and lib paths for MSBuild
+          echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
+          echo "QT_PLUGIN_PATH=$qtPath\plugins" >> $env:GITHUB_ENV
+          echo "QT_QPA_PLATFORM_PLUGIN_PATH=$qtPath\plugins\platforms" >> $env:GITHUB_ENV
+          
           echo "Qt environment configured successfully"
+          echo "Qt include path: $qtPath\include"
+          echo "Qt lib path: $qtPath\lib"
         } else {
           echo "Warning: Qt path not found: $qtPath"
           echo "Available Qt installations:"
