@@ -126,8 +126,13 @@ jobs:
 
     strategy:
       matrix:
-        configuration: [Release, Static]
-        platform: [x86, x64]
+        include:
+          - configuration: Release
+            platform: x86
+          - configuration: Release
+            platform: x64
+          - configuration: Static
+            platform: x64
 
     steps:
     - name: Checkout GUI repository
@@ -171,8 +176,8 @@ jobs:
         modules: 'qtcharts qtdatavis3d'
         cache: true
 
-    - name: Download static Qt build (x64 only)
-      if: matrix.configuration == 'Static' && matrix.platform == 'x64'
+    - name: Download static Qt build (Static x64 only)
+      if: matrix.configuration == 'Static'
       run: |
         echo "Downloading static Qt build..."
         $url = "https://github.com/martinrotter/qt5-minimalistic-builds/releases/download/5.15.2/qt-5.15.2-static-msvc2019-x86_64.7z"
@@ -202,7 +207,7 @@ jobs:
 
     - name: Setup Qt environment variables
       run: |
-        if ("${{ matrix.configuration }}" -eq "Static" -and "${{ matrix.platform }}" -eq "x64") {
+        if ("${{ matrix.configuration }}" -eq "Static") {
           $qtPath = "C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64"
           echo "Using static Qt path: $qtPath"
         } else {
@@ -371,11 +376,7 @@ jobs:
           Copy-Item "GH-Injector-GUI-Release-x64/*" "release-package/x64/" -Recurse -Force
         }
         
-        # Copy static GUI builds (standalone executables)
-        if (Test-Path "GH-Injector-GUI-Static-x86") {
-          mkdir "release-package/x86-static"
-          Copy-Item "GH-Injector-GUI-Static-x86/*" "release-package/x86-static/" -Recurse -Force
-        }
+        # Copy static GUI builds (standalone executables - x64 only)
         if (Test-Path "GH-Injector-GUI-Static-x64") {
           mkdir "release-package/x64-static"
           Copy-Item "GH-Injector-GUI-Static-x64/*" "release-package/x64-static/" -Recurse -Force
