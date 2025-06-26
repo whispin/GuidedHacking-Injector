@@ -305,7 +305,7 @@ jobs:
           exit 1
         }
 
-    - name: Verify Qt installation and create Qt props file
+    - name: Verify Qt installation and configure projects
       working-directory: gui
       run: |
         echo "=== Qt Installation Verification ==="
@@ -357,7 +357,7 @@ jobs:
             echo "[ERROR] Qt lib directory not found: $libDir"
           }
           
-          # Create a custom Qt props file for MSBuild if needed
+          # Create a comprehensive Qt props file for MSBuild
           $propsContent = '<?xml version="1.0" encoding="utf-8"?>' + "`n"
           $propsContent += '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' + "`n"
           $propsContent += '  <PropertyGroup>' + "`n"
@@ -365,11 +365,12 @@ jobs:
           $propsContent += "    <QtToolsPath>$qtPath\bin</QtToolsPath>" + "`n"
           $propsContent += "    <QtIncludePath>$qtPath\include</QtIncludePath>" + "`n"
           $propsContent += "    <QtLibraryPath>$qtPath\lib</QtLibraryPath>" + "`n"
+          $propsContent += "    <QTDIR>$qtPath</QTDIR>" + "`n"
           $propsContent += '  </PropertyGroup>' + "`n"
           $propsContent += '  <ItemDefinitionGroup>' + "`n"
           $propsContent += '    <ClCompile>' + "`n"
-          $propsContent += "      <AdditionalIncludeDirectories>$qtPath\include;$qtPath\include\QtCore;$qtPath\include\QtGui;$qtPath\include\QtWidgets;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>" + "`n"
-          $propsContent += '      <PreprocessorDefinitions>QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>' + "`n"
+          $propsContent += "      <AdditionalIncludeDirectories>$qtPath\include;$qtPath\include\QtCore;$qtPath\include\QtGui;$qtPath\include\QtWidgets;$qtPath\include\QtNetwork;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>" + "`n"
+          $propsContent += '      <PreprocessorDefinitions>QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;QT_NETWORK_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>' + "`n"
           $propsContent += '    </ClCompile>' + "`n"
           $propsContent += '    <Link>' + "`n"
           $propsContent += "      <AdditionalLibraryDirectories>$qtPath\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>" + "`n"
@@ -379,6 +380,35 @@ jobs:
           
           Set-Content "qt-custom.props" -Value $propsContent
           echo "Created custom Qt props file: qt-custom.props"
+          
+          # Find and modify all .vcxproj files to import our Qt props
+          echo ""
+          echo "=== Configuring Qt Projects ==="
+          $vcxprojFiles = Get-ChildItem -Recurse -Include "*.vcxproj" | Where-Object { 
+            $content = Get-Content $_.FullName -Raw
+            $content -match "Qt" -or $content -match "QApplication" -or $_.Name -like "*GUI*"
+          }
+          
+          foreach ($project in $vcxprojFiles) {
+            echo "Configuring Qt project: $($project.Name)"
+            $projectContent = Get-Content $project.FullName -Raw
+            
+            # Check if our props file is already imported
+            if ($projectContent -notmatch "qt-custom.props") {
+              # Find the first Import element and add our props before it
+              $importPattern = '(<Import\s+Project="[^"]*"[^>]*/>)'
+              if ($projectContent -match $importPattern) {
+                $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
+                $projectContent = $projectContent -replace $importPattern, ($qtImport + '$1')
+                Set-Content $project.FullName -Value $projectContent
+                echo "  Added Qt props import to $($project.Name)"
+              } else {
+                echo "  Could not find Import element in $($project.Name)"
+              }
+            } else {
+              echo "  Qt props already imported in $($project.Name)"
+            }
+          }
         } else {
           echo "Qt installation not found or QTDIR not set"
           exit 1
@@ -392,6 +422,110 @@ jobs:
           echo "Library binaries copied successfully"
         } else {
           echo "Warning: Library binaries not found"
+        }
+
+    - name: Patch project files for Qt paths
+      working-directory: gui
+      run: |
+        echo "=== Patching Project Files for Qt Paths ==="
+        
+        # Find all .vcxproj files that might need Qt
+        $qtProjects = Get-ChildItem -Recurse -Include "*.vcxproj" | Where-Object { 
+          $content = Get-Content $_.FullName -Raw
+          $content -match "Qt" -or $content -match "QApplication" -or $_.Name -like "*GUI*"
+        }
+        
+        foreach ($project in $qtProjects) {
+          echo "Patching project: $($project.Name)"
+          $projectPath = $project.FullName
+          $content = Get-Content $projectPath -Raw
+          
+          # Add Qt include directories to all configurations
+          $qtIncludeDir = $env:QTDIR -replace '\\', '\\'
+          $qtIncludePaths = "$qtIncludeDir\\include;$qtIncludeDir\\include\\QtCore;$qtIncludeDir\\include\\QtGui;$qtIncludeDir\\include\\QtWidgets;$qtIncludeDir\\include\\QtNetwork"
+          
+          # Find ClCompile sections and add AdditionalIncludeDirectories
+          $clCompilePattern = '(<ClCompile[^>]*>)'
+          if ($content -match $clCompilePattern) {
+            # Add include directories to existing ClCompile sections
+            $includePattern = '(<AdditionalIncludeDirectories>)([^<]*)(</AdditionalIncludeDirectories>)'
+            if ($content -match $includePattern) {
+              # Update existing include directories
+              $content = $content -replace $includePattern, ('$1' + $qtIncludePaths + ';$2$3')
+            } else {
+              # Add new include directories element
+              $content = $content -replace '(<ClCompile[^>]*>)', ('$1' + "`n" + "      <AdditionalIncludeDirectories>$qtIncludePaths;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>")
+            }
+          }
+          
+          # Add Qt library directories
+          $qtLibDir = "$qtIncludeDir\\lib"
+          $libPattern = '(<AdditionalLibraryDirectories>)([^<]*)(</AdditionalLibraryDirectories>)'
+          if ($content -match $libPattern) {
+            $content = $content -replace $libPattern, ('$1' + $qtLibDir + ';$2$3')
+          }
+          
+          # Add Qt preprocessor definitions
+          $qtDefines = "QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;QT_NETWORK_LIB"
+          $definesPattern = '(<PreprocessorDefinitions>)([^<]*)(</PreprocessorDefinitions>)'
+          if ($content -match $definesPattern) {
+            $content = $content -replace $definesPattern, ('$1' + $qtDefines + ';$2$3')
+          }
+          
+          Set-Content $projectPath -Value $content
+          echo "  Patched $($project.Name) with Qt paths"
+        }
+        
+        echo "Project patching completed."
+
+    - name: Debug pch.h and Qt includes
+      working-directory: gui
+      run: |
+        echo "=== Debugging pch.h and Qt includes ==="
+        
+        # Find pch.h files
+        $pchFiles = Get-ChildItem -Recurse -Include "pch.h"
+        foreach ($pchFile in $pchFiles) {
+          echo "Found pch.h: $($pchFile.FullName)"
+          echo "Content around line 45:"
+          $lines = Get-Content $pchFile.FullName
+          $startLine = [Math]::Max(0, 40)
+          $endLine = [Math]::Min($lines.Length - 1, 50)
+          for ($i = $startLine; $i -le $endLine; $i++) {
+            $lineNum = $i + 1
+            $marker = if ($lineNum -eq 45) { " >>> " } else { "     " }
+            echo "$marker$lineNum : $($lines[$i])"
+          }
+          echo ""
+        }
+        
+        # Check if QApplication can be found
+        echo "=== Checking QApplication availability ==="
+        $qtIncludeDir = "$env:QTDIR\include"
+        echo "Qt include directory: $qtIncludeDir"
+        
+        if (Test-Path "$qtIncludeDir\QtWidgets") {
+          echo "QtWidgets directory exists"
+          echo "Contents of QtWidgets:"
+          Get-ChildItem "$qtIncludeDir\QtWidgets" | Select-Object Name | Format-Table -AutoSize
+          
+          # Check for QApplication specifically
+          $qappPaths = @(
+            "$qtIncludeDir\QtWidgets\QApplication",
+            "$qtIncludeDir\QtWidgets\qapplication.h",
+            "$qtIncludeDir\QApplication",
+            "$qtIncludeDir\qapplication.h"
+          )
+          
+          foreach ($path in $qappPaths) {
+            if (Test-Path $path) {
+              echo "[FOUND] QApplication at: $path"
+            } else {
+              echo "[NOT FOUND] $path"
+            }
+          }
+        } else {
+          echo "QtWidgets directory does not exist!"
         }
 
     - name: Build GUI Solution
@@ -440,17 +574,32 @@ jobs:
         echo ""
         echo "Building GUI solution with: Configuration=$config, Platform=$msbuildPlatform"
         
-        # Add additional MSBuild properties for Qt
-        $additionalProps = "/p:QTDIR=$env:QTDIR"
-        $additionalProps += " /p:QT_INSTALL_PREFIX=$env:QTDIR"
-        $additionalProps += " /p:QT_INSTALL_INCLUDES=$env:QTDIR\include"
-        $additionalProps += " /p:QT_INSTALL_LIBS=$env:QTDIR\lib"
+        # Add comprehensive MSBuild properties for Qt
+        $qtIncludePaths = "$env:QTDIR\include;$env:QTDIR\include\QtCore;$env:QTDIR\include\QtGui;$env:QTDIR\include\QtWidgets;$env:QTDIR\include\QtNetwork"
+        $qtLibPaths = "$env:QTDIR\lib"
+        
+        $additionalProps = @(
+          "/p:QTDIR=`"$env:QTDIR`""
+          "/p:QT_INSTALL_PREFIX=`"$env:QTDIR`""
+          "/p:QT_INSTALL_INCLUDES=`"$env:QTDIR\include`""
+          "/p:QT_INSTALL_LIBS=`"$env:QTDIR\lib`""
+          "/p:QtInstall=`"$env:QTDIR`""
+          "/p:QtIncludePath=`"$env:QTDIR\include`""
+          "/p:QtLibraryPath=`"$env:QTDIR\lib`""
+          "/p:AdditionalIncludeDirectories=`"$qtIncludePaths`""
+          "/p:AdditionalLibraryDirectories=`"$qtLibPaths`""
+        )
         
         if ("$config" -eq "Static") {
-          $additionalProps += " /p:QT_STATIC_BUILD=true"
+          $additionalProps += "/p:QT_STATIC_BUILD=true"
         }
         
-        # Build with verbose output to diagnose Qt issues
+        echo "MSBuild properties:"
+        $additionalProps | ForEach-Object { echo "  $_" }
+        
+        # Build with normal output but comprehensive Qt properties
+        echo ""
+        echo "Starting MSBuild..."
         msbuild $solutionFile /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false $additionalProps /m /verbosity:normal
 
     - name: List GUI build output
