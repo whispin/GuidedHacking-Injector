@@ -395,15 +395,49 @@ jobs:
             
             # Check if our props file is already imported
             if ($projectContent -notmatch "qt-custom.props") {
-              # Find the first Import element and add our props before it
-              $importPattern = '(<Import\s+Project="[^"]*"[^>]*/>)'
-              if ($projectContent -match $importPattern) {
-                $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
-                $projectContent = $projectContent -replace $importPattern, ($qtImport + '$1')
-                Set-Content $project.FullName -Value $projectContent
-                echo "  Added Qt props import to $($project.Name)"
+              # Find a safe location to add the Import - after the first PropertyGroup but before any ItemGroup or Target
+              $safeImportLocation = $false
+              
+              # Try to find the end of the first PropertyGroup
+              $propertyGroupEndPattern = '</PropertyGroup>'
+              if ($projectContent -match $propertyGroupEndPattern) {
+                $qtImport = "`n  " + '<Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />'
+                $projectContent = $projectContent -replace $propertyGroupEndPattern, ($propertyGroupEndPattern + $qtImport)
+                $safeImportLocation = $true
+              }
+              
+              # If that didn't work, try to find before the first ItemGroup
+              if (-not $safeImportLocation) {
+                $itemGroupPattern = '(\s*<ItemGroup[^>]*>)'
+                if ($projectContent -match $itemGroupPattern) {
+                  $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
+                  $projectContent = $projectContent -replace $itemGroupPattern, ($qtImport + '$1')
+                  $safeImportLocation = $true
+                }
+              }
+              
+              # If that didn't work, try to find before the first Target
+              if (-not $safeImportLocation) {
+                $targetPattern = '(\s*<Target[^>]*>)'
+                if ($projectContent -match $targetPattern) {
+                  $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
+                  $projectContent = $projectContent -replace $targetPattern, ($qtImport + '$1')
+                  $safeImportLocation = $true
+                }
+              }
+              
+              if ($safeImportLocation) {
+                # Validate the modified project file before saving
+                try {
+                  $xmlDoc = [xml]$projectContent
+                  Set-Content $project.FullName -Value $projectContent
+                  echo "  Added Qt props import to $($project.Name) - XML validation passed"
+                } catch {
+                  echo "  ERROR: XML validation failed for $($project.Name): $($_.Exception.Message)"
+                  echo "  Skipping Qt props import for this project"
+                }
               } else {
-                echo "  Could not find Import element in $($project.Name)"
+                echo "  Could not find safe location for Import element in $($project.Name)"
               }
             } else {
               echo "  Qt props already imported in $($project.Name)"
@@ -444,39 +478,120 @@ jobs:
           $qtIncludeDir = $env:QTDIR -replace '\\', '\\'
           $qtIncludePaths = "$qtIncludeDir\\include;$qtIncludeDir\\include\\QtCore;$qtIncludeDir\\include\\QtGui;$qtIncludeDir\\include\\QtWidgets;$qtIncludeDir\\include\\QtNetwork"
           
-          # Find ClCompile sections and add AdditionalIncludeDirectories
+          # Find ClCompile sections and add AdditionalIncludeDirectories more safely
           $clCompilePattern = '(<ClCompile[^>]*>)'
           if ($content -match $clCompilePattern) {
             # Add include directories to existing ClCompile sections
             $includePattern = '(<AdditionalIncludeDirectories>)([^<]*)(</AdditionalIncludeDirectories>)'
             if ($content -match $includePattern) {
-              # Update existing include directories
-              $content = $content -replace $includePattern, ('$1' + $qtIncludePaths + ';$2$3')
+              # Update existing include directories - check if Qt paths are already there
+              if ($content -notmatch [regex]::Escape($qtIncludePaths)) {
+                $content = $content -replace $includePattern, ('$1' + $qtIncludePaths + ';$2$3')
+              }
             } else {
-              # Add new include directories element
-              $content = $content -replace '(<ClCompile[^>]*>)', ('$1' + "`n" + "      <AdditionalIncludeDirectories>$qtIncludePaths;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>")
+              # Look for ClCompile within ItemDefinitionGroup to add include directories safely
+              $itemDefGroupPattern = '(<ItemDefinitionGroup[^>]*>[\s\S]*?<ClCompile[^>]*>)([\s\S]*?)(</ClCompile>[\s\S]*?</ItemDefinitionGroup>)'
+              if ($content -match $itemDefGroupPattern) {
+                $newIncludeElement = "`n      <AdditionalIncludeDirectories>$qtIncludePaths;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>"
+                $content = $content -replace $itemDefGroupPattern, ('$1' + $newIncludeElement + '$2$3')
+              }
             }
           }
           
-          # Add Qt library directories
+          # Add Qt library directories more safely
           $qtLibDir = "$qtIncludeDir\\lib"
           $libPattern = '(<AdditionalLibraryDirectories>)([^<]*)(</AdditionalLibraryDirectories>)'
           if ($content -match $libPattern) {
-            $content = $content -replace $libPattern, ('$1' + $qtLibDir + ';$2$3')
+            # Check if Qt lib path is already there
+            if ($content -notmatch [regex]::Escape($qtLibDir)) {
+              $content = $content -replace $libPattern, ('$1' + $qtLibDir + ';$2$3')
+            }
           }
           
-          # Add Qt preprocessor definitions
+          # Add Qt preprocessor definitions more safely
           $qtDefines = "QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;QT_NETWORK_LIB"
           $definesPattern = '(<PreprocessorDefinitions>)([^<]*)(</PreprocessorDefinitions>)'
           if ($content -match $definesPattern) {
-            $content = $content -replace $definesPattern, ('$1' + $qtDefines + ';$2$3')
+            # Check if Qt defines are already there
+            if ($content -notmatch "QT_WIDGETS_LIB") {
+              $content = $content -replace $definesPattern, ('$1' + $qtDefines + ';$2$3')
+            }
           }
           
-          Set-Content $projectPath -Value $content
-          echo "  Patched $($project.Name) with Qt paths"
+          # Validate the modified project file before saving
+          try {
+            $xmlDoc = [xml]$content
+            Set-Content $projectPath -Value $content
+            echo "  Patched $($project.Name) with Qt paths - XML validation passed"
+          } catch {
+            echo "  ERROR: XML validation failed for $($project.Name): $($_.Exception.Message)"
+            echo "  Skipping modifications for this project"
+          }
         }
         
         echo "Project patching completed."
+
+    - name: Validate project files
+      working-directory: gui
+      run: |
+        echo "=== Validating Project Files ==="
+        
+        $allValid = $true
+        $vcxprojFiles = Get-ChildItem -Recurse -Include "*.vcxproj"
+        
+        foreach ($project in $vcxprojFiles) {
+          echo "Validating: $($project.Name)"
+          try {
+            $content = Get-Content $project.FullName -Raw
+            $xmlDoc = [xml]$content
+            echo "  [OK] $($project.Name) - XML is valid"
+            
+            # Additional MSBuild-specific validation
+            # Check for ItemGroup elements outside of Target elements
+            $itemGroupsOutsideTargets = $xmlDoc.SelectNodes("//ItemGroup[not(ancestor::Target)]")
+            foreach ($itemGroup in $itemGroupsOutsideTargets) {
+              $hasValidOperation = $false
+              foreach ($child in $itemGroup.ChildNodes) {
+                if ($child.NodeType -eq "Element") {
+                  $operation = $child.GetAttribute("Include") + $child.GetAttribute("Update") + $child.GetAttribute("Remove")
+                  if ($operation -ne "") {
+                    $hasValidOperation = $true
+                    break
+                  }
+                }
+              }
+              if (-not $hasValidOperation -and $itemGroup.ChildNodes.Count -gt 0) {
+                echo "  [WARNING] $($project.Name) - ItemGroup outside Target may have missing Include/Update/Remove operations"
+                $allValid = $false
+              }
+            }
+            
+          } catch {
+            echo "  [ERROR] $($project.Name) - XML validation failed: $($_.Exception.Message)"
+            $allValid = $false
+            
+            # Show the problematic content around the error
+            $lines = Get-Content $project.FullName
+            $errorLine = if ($_.Exception.Message -match "line (\d+)") { [int]$matches[1] } else { 1 }
+            $startLine = [Math]::Max(1, $errorLine - 5)
+            $endLine = [Math]::Min($lines.Length, $errorLine + 5)
+            
+            echo "    Content around line $errorLine :"
+            for ($i = $startLine; $i -le $endLine; $i++) {
+              $marker = if ($i -eq $errorLine) { " >>> " } else { "     " }
+              echo "$marker$i : $($lines[$i-1])"
+            }
+          }
+        }
+        
+        if (-not $allValid) {
+          echo ""
+          echo "ERROR: Some project files have XML validation errors. Build may fail."
+          echo "Please check the errors above and fix the project files."
+        } else {
+          echo ""
+          echo "All project files passed XML validation."
+        }
 
     - name: Debug pch.h and Qt includes
       working-directory: gui
@@ -600,7 +715,52 @@ jobs:
         # Build with normal output but comprehensive Qt properties
         echo ""
         echo "Starting MSBuild..."
-        msbuild $solutionFile /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false $additionalProps /m /verbosity:normal
+        
+        # First try to validate the solution file
+        try {
+          echo "Validating solution file..."
+          $solutionContent = Get-Content $solutionFile -Raw
+          if ($solutionContent -match "Microsoft Visual Studio Solution File") {
+            echo "Solution file appears to be valid"
+          } else {
+            echo "WARNING: Solution file may be corrupted"
+          }
+        } catch {
+          echo "WARNING: Could not validate solution file: $($_.Exception.Message)"
+        }
+        
+        # Build with error handling
+        $buildResult = $null
+        try {
+          msbuild $solutionFile /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false $additionalProps /m /verbosity:normal
+          $buildResult = $LASTEXITCODE
+        } catch {
+          echo "MSBuild execution failed: $($_.Exception.Message)"
+          $buildResult = 1
+        }
+        
+        if ($buildResult -ne 0) {
+          echo ""
+          echo "Build failed with exit code: $buildResult"
+          echo "Attempting to diagnose the issue..."
+          
+          # Check if any project files have issues
+          echo "Checking project files for common issues..."
+          $vcxprojFiles = Get-ChildItem -Recurse -Include "*.vcxproj"
+          foreach ($project in $vcxprojFiles) {
+            $content = Get-Content $project.FullName -Raw
+            if ($content -match '<[^>]+\s+[^>]*>') {
+              # Check for common MSBuild issues
+              if ($content -match '<\s*[^>]*\s+[^=]*=\s*[^>]*>') {
+                echo "Potential syntax issue in $($project.Name)"
+              }
+            }
+          }
+          
+          exit $buildResult
+        } else {
+          echo "Build completed successfully"
+        }
 
     - name: List GUI build output
       working-directory: gui
