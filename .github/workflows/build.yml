@@ -405,7 +405,8 @@ jobs:
               $propertyGroupEndPattern = '</PropertyGroup>'
               if ($projectContent -match $propertyGroupEndPattern) {
                 $qtImport = "`n  " + '<Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />'
-                $projectContent = $projectContent -replace $propertyGroupEndPattern, ($propertyGroupEndPattern + $qtImport), 1
+                # Use regex replace with limit to replace only the first occurrence
+                $projectContent = [regex]::Replace($projectContent, [regex]::Escape($propertyGroupEndPattern), ($propertyGroupEndPattern + $qtImport), 1)
                 $safeImportLocation = $true
               }
               
@@ -414,7 +415,7 @@ jobs:
                 $itemGroupPattern = '(\s*<ItemGroup[^>]*>)'
                 if ($projectContent -match $itemGroupPattern) {
                   $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
-                  $projectContent = $projectContent -replace $itemGroupPattern, ($qtImport + '$1'), 1
+                  $projectContent = [regex]::Replace($projectContent, $itemGroupPattern, ($qtImport + '$1'), 1)
                   $safeImportLocation = $true
                 }
               }
@@ -424,7 +425,7 @@ jobs:
                 $targetPattern = '(\s*<Target[^>]*>)'
                 if ($projectContent -match $targetPattern) {
                   $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
-                  $projectContent = $projectContent -replace $targetPattern, ($qtImport + '$1'), 1
+                  $projectContent = [regex]::Replace($projectContent, $targetPattern, ($qtImport + '$1'), 1)
                   $safeImportLocation = $true
                 }
               }
