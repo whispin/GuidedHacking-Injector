@@ -230,7 +230,8 @@ jobs:
       run: |
         $platform = "${{ matrix.platform }}"
         $config = "${{ matrix.configuration }}"
-        $msbuildPlatform = if ($platform -eq "x86") { "Win32" } else { "x64" }
+        # Use the same platform naming as in the solution file (x86 instead of Win32)
+        $msbuildPlatform = $platform
         
         echo "=== GUI Build Information ==="
         echo "Matrix Configuration: ${{ matrix.configuration }}"
@@ -290,6 +291,11 @@ jobs:
         # Define build output directories to search
         $searchPaths = @()
         if ($platform -eq "x86") {
+          # GUI solution uses x86 naming, not Win32
+          $searchPaths += "GH Injector GUI\x86\$config"
+          $searchPaths += "GH Injector\x86\$config"
+          $searchPaths += "x86\$config"
+          # Also check Win32 as fallback
           $searchPaths += "GH Injector GUI\Win32\$config"
           $searchPaths += "GH Injector\Win32\$config"
           $searchPaths += "Win32\$config"
