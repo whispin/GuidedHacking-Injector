@@ -1,0 +1,98 @@
+name: Build GH Injector Library
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        configuration: [Release]
+        platform: [x86, x64]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Setup VS Dev Environment
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.platform }}
+
+    - name: Build Solution
+      run: |
+        $platform = if ("${{ matrix.platform }}" -eq "x86") { "Win32" } else { "${{ matrix.platform }}" }
+        msbuild "GH Injector Library.sln" /p:Configuration=${{ matrix.configuration }} /p:Platform=$platform /m
+
+    - name: List build output
+      run: |
+        echo "Listing build output directories:"
+        Get-ChildItem -Recurse -Include "*.dll","*.exe" | Select-Object FullName
+        echo "Current directory contents:"
+        Get-ChildItem -Recurse | Where-Object { $_.PSIsContainer } | Select-Object FullName
+
+    - name: Prepare artifacts
+      run: |
+        $platformDir = "${{ matrix.platform }}"
+        $configDir = "${{ matrix.configuration }}"
+        
+        # Create artifact directory
+        mkdir -Force "artifacts"
+        
+        # Find and copy all built files
+        Get-ChildItem -Recurse -Include "*.dll","*.exe" | ForEach-Object {
+          $relativePath = $_.FullName.Replace((Get-Location).Path + "\", "")
+          echo "Found: $relativePath"
+          Copy-Item $_.FullName "artifacts\" -Force
+        }
+        
+        echo "Artifacts directory contents:"
+        Get-ChildItem "artifacts" | Select-Object Name
+
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: GH-Injector-${{ matrix.configuration }}-${{ matrix.platform }}
+        path: artifacts/
+        if-no-files-found: warn
+
+  package:
+    needs: build
+    runs-on: windows-latest
+    if: success()
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Create release package
+      run: |
+        mkdir release-package
+        
+        # Copy x86 files
+        if (Test-Path "GH-Injector-Release-x86") {
+          mkdir "release-package/x86"
+          Copy-Item "GH-Injector-Release-x86/*" "release-package/x86/" -Recurse
+        }
+        
+        # Copy x64 files  
+        if (Test-Path "GH-Injector-Release-x64") {
+          mkdir "release-package/x64"
+          Copy-Item "GH-Injector-Release-x64/*" "release-package/x64/" -Recurse
+        }
+
+    - name: Upload Complete Package
+      uses: actions/upload-artifact@v4
+      with:
+        name: GH-Injector-Complete-Package
+        path: release-package/
+        if-no-files-found: error
