@@ -126,13 +126,11 @@ jobs:
 
     strategy:
       matrix:
-        include:
-          - configuration: Release
-            platform: x86
-          - configuration: Release
-            platform: x64
+        configuration: [Release, Static]
+        platform: [x86, x64]
+        exclude:
           - configuration: Static
-            platform: x64
+            platform: x86
 
     steps:
     - name: Checkout GUI repository
@@ -235,8 +233,10 @@ jobs:
         $msbuildPlatform = if ($platform -eq "x86") { "Win32" } else { "x64" }
         
         echo "=== GUI Build Information ==="
-        echo "Configuration: $config"
-        echo "Platform: $msbuildPlatform"
+        echo "Matrix Configuration: ${{ matrix.configuration }}"
+        echo "Matrix Platform: ${{ matrix.platform }}"
+        echo "Resolved Configuration: $config"
+        echo "Resolved Platform: $msbuildPlatform"
         echo "Qt Directory: $env:QTDIR"
         echo ""
         
@@ -244,8 +244,33 @@ jobs:
         Get-ChildItem "*.sln" | Select-Object Name
         echo ""
         
-        echo "Building GUI solution..."
-        msbuild "GH Injector GUI.sln" /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false /m /verbosity:minimal
+        echo "Checking solution configurations..."
+        $solutionFile = "GH Injector GUI.sln"
+        if (Test-Path $solutionFile) {
+          echo "Solution file exists: $solutionFile"
+          echo ""
+          echo "Available solution configurations:"
+          Get-Content $solutionFile | Where-Object { $_ -match "^\s*(Debug|Release|Static)\|" } | ForEach-Object { $_.Trim() }
+          echo ""
+          echo "Looking for target configuration: $config|$msbuildPlatform"
+          $targetConfig = "$config|$msbuildPlatform"
+          $configExists = Get-Content $solutionFile | Where-Object { $_ -match [regex]::Escape($targetConfig) }
+          if ($configExists) {
+            echo "Target configuration found in solution"
+          } else {
+            echo "Target configuration NOT found in solution"
+            echo "Available configurations containing '$config':"
+            Get-Content $solutionFile | Where-Object { $_ -match $config } | ForEach-Object { $_.Trim() }
+          }
+        } else {
+          echo "Solution file not found: $solutionFile"
+          echo "Available files:"
+          Get-ChildItem | Select-Object Name
+        }
+        
+        echo ""
+        echo "Building GUI solution with: Configuration=$config, Platform=$msbuildPlatform"
+        msbuild $solutionFile /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false /m /verbosity:minimal
 
     - name: List GUI build output
       working-directory: gui
