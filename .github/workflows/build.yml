@@ -179,7 +179,7 @@ jobs:
         modules: 'qtcharts qtdatavis3d'
         cache: true
 
-    - name: Download static Qt build (Static x64 only)
+    - name: Download and setup static Qt build (Static x64 only)
       if: matrix.configuration == 'Static'
       run: |
         echo "Downloading static Qt build..."
@@ -190,7 +190,37 @@ jobs:
         echo "Extracting static Qt build..."
         7z x $output -o"C:\Qt\5.15.2\"
         
-        echo "Static Qt extracted to C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64"
+        $staticQtPath = "C:\Qt\5.15.2\qt-5.15.2-static-msvc2019-x86_64"
+        echo "Static Qt extracted to $staticQtPath"
+        
+        # Verify extraction
+        if (Test-Path $staticQtPath) {
+          echo "Static Qt build extracted successfully"
+          echo "Contents of static Qt directory:"
+          Get-ChildItem $staticQtPath | Select-Object Name
+          
+          # Check for required directories
+          $requiredDirs = @("include", "lib", "bin")
+          foreach ($dir in $requiredDirs) {
+            $dirPath = Join-Path $staticQtPath $dir
+            if (Test-Path $dirPath) {
+              echo "[OK] $dir directory found"
+            } else {
+              echo "[ERROR] $dir directory not found"
+            }
+          }
+          
+          # List Qt modules in include directory
+          $includeDir = Join-Path $staticQtPath "include"
+          if (Test-Path $includeDir) {
+            echo "Available Qt modules in include:"
+            Get-ChildItem $includeDir -Directory | Where-Object { $_.Name -like "Qt*" } | Select-Object Name
+          }
+        } else {
+          echo "Error: Static Qt build extraction failed"
+          echo "Available directories in C:\Qt\5.15.2\:"
+          Get-ChildItem "C:\Qt\5.15.2\" -Directory -ErrorAction SilentlyContinue | Select-Object Name
+        }
 
     - name: Download library artifacts
       uses: actions/download-artifact@v4
@@ -229,74 +259,6 @@ jobs:
         echo "Restoring packages for entire solution..."
         nuget restore "GH Injector GUI.sln"
 
-    - name: Verify Qt installation
-      run: |
-        echo "=== Qt Installation Verification ==="
-        echo "QTDIR: $env:QTDIR"
-        echo "Qt5_Dir: $env:Qt5_Dir"
-        echo ""
-        
-        if ($env:QTDIR -and (Test-Path $env:QTDIR)) {
-          echo "Qt installation found at: $env:QTDIR"
-          echo "Qt include directory:"
-          if (Test-Path "$env:QTDIR\include") {
-            Get-ChildItem "$env:QTDIR\include" -Directory | Select-Object Name | Format-Table -AutoSize
-          } else {
-            echo "Qt include directory not found"
-          }
-          echo ""
-          echo "Qt lib directory:"
-          if (Test-Path "$env:QTDIR\lib") {
-            Get-ChildItem "$env:QTDIR\lib" -Include "*.lib" | Select-Object Name | Format-Table -AutoSize
-          } else {
-            echo "Qt lib directory not found"
-          }
-        } else {
-          echo "Qt installation not found or QTDIR not set"
-          echo "Available Qt installations:"
-          Get-ChildItem "C:\Qt" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
-        }
-
-    - name: Configure Qt for MSBuild
-      working-directory: gui
-      run: |
-        echo "=== Configuring Qt for MSBuild ==="
-        
-        # Check if there are any .vcxproj files that need Qt configuration
-        $qtProjects = Get-ChildItem -Recurse -Include "*.vcxproj" | Where-Object { 
-          (Get-Content $_.FullName -Raw) -match "Qt" 
-        }
-        
-        foreach ($project in $qtProjects) {
-          echo "Found Qt project: $($project.Name)"
-          echo "Project path: $($project.FullName)"
-          
-          # Check if project has Qt configuration
-          $content = Get-Content $project.FullName -Raw
-          if ($content -match "QtInstall") {
-            echo "Project already has Qt configuration"
-          } else {
-            echo "Project may need Qt configuration"
-          }
-        }
-        
-        # Set additional Qt environment variables for MSBuild
-        echo "Setting additional Qt environment variables..."
-        echo "QT_INSTALL_PREFIX=$env:QTDIR" >> $env:GITHUB_ENV
-        echo "QT_INSTALL_BINS=$env:QTDIR\bin" >> $env:GITHUB_ENV
-        echo "QT_INSTALL_INCLUDES=$env:QTDIR\include" >> $env:GITHUB_ENV
-        echo "QT_INSTALL_LIBS=$env:QTDIR\lib" >> $env:GITHUB_ENV
-
-    - name: Copy library binaries to GUI project
-      run: |
-        echo "Copying library binaries to GUI project..."
-        if (Test-Path "library-binaries") {
-          Copy-Item "library-binaries\*" "gui\" -Recurse -Force
-          echo "Library binaries copied successfully"
-        } else {
-          echo "Warning: Library binaries not found"
-        }
-
     - name: Setup Qt environment variables
       run: |
         if ("${{ matrix.configuration }}" -eq "Static") {
@@ -308,6 +270,7 @@ jobs:
         }
         
         if (Test-Path $qtPath) {
+          # Set all Qt environment variables
           echo "Qt5_DIR=$qtPath" >> $env:GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=$qtPath" >> $env:GITHUB_ENV
           echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
@@ -317,18 +280,120 @@ jobs:
           echo "Qt5Widgets_DIR=$qtPath\lib\cmake\Qt5Widgets" >> $env:GITHUB_ENV
           echo "$qtPath\bin" >> $env:GITHUB_PATH
           
-          # Add Qt include and lib paths for MSBuild
-          echo "QTDIR=$qtPath" >> $env:GITHUB_ENV
+          # Set MSBuild-specific Qt environment variables
+          echo "QT_INSTALL_PREFIX=$qtPath" >> $env:GITHUB_ENV
+          echo "QT_INSTALL_BINS=$qtPath\bin" >> $env:GITHUB_ENV
+          echo "QT_INSTALL_INCLUDES=$qtPath\include" >> $env:GITHUB_ENV
+          echo "QT_INSTALL_LIBS=$qtPath\lib" >> $env:GITHUB_ENV
+          echo "QT_INSTALL_PLUGINS=$qtPath\plugins" >> $env:GITHUB_ENV
           echo "QT_PLUGIN_PATH=$qtPath\plugins" >> $env:GITHUB_ENV
           echo "QT_QPA_PLATFORM_PLUGIN_PATH=$qtPath\plugins\platforms" >> $env:GITHUB_ENV
+          
+          # Additional environment variables for static builds
+          if ("${{ matrix.configuration }}" -eq "Static") {
+            echo "QT_STATIC_BUILD=1" >> $env:GITHUB_ENV
+          }
           
           echo "Qt environment configured successfully"
           echo "Qt include path: $qtPath\include"
           echo "Qt lib path: $qtPath\lib"
+          echo "Qt bin path: $qtPath\bin"
         } else {
-          echo "Warning: Qt path not found: $qtPath"
+          echo "Error: Qt path not found: $qtPath"
           echo "Available Qt installations:"
           Get-ChildItem "C:\Qt" -Directory -ErrorAction SilentlyContinue | Select-Object FullName
+          exit 1
+        }
+
+    - name: Verify Qt installation and create Qt props file
+      working-directory: gui
+      run: |
+        echo "=== Qt Installation Verification ==="
+        echo "QTDIR: $env:QTDIR"
+        echo "Qt5_Dir: $env:Qt5_Dir"
+        echo ""
+        
+        $qtPath = $env:QTDIR
+        if ($qtPath -and (Test-Path $qtPath)) {
+          echo "Qt installation found at: $qtPath"
+          
+          # Verify Qt include directory and QApplication header
+          $includeDir = "$qtPath\include"
+          if (Test-Path $includeDir) {
+            echo "Qt include directory found: $includeDir"
+            
+            # Check for QApplication header specifically
+            $qAppHeader = "$includeDir\QtWidgets\QApplication"
+            if (Test-Path $qAppHeader) {
+              echo "[OK] QApplication header found at: $qAppHeader"
+            } else {
+              echo "[WARNING] QApplication header not found, checking alternative locations..."
+              # Check for qapplication.h
+              $qAppHeaderAlt = "$includeDir\QtWidgets\qapplication.h"
+              if (Test-Path $qAppHeaderAlt) {
+                echo "[OK] qapplication.h found at: $qAppHeaderAlt"
+              } else {
+                echo "[ERROR] QApplication header not found in QtWidgets"
+                echo "Available headers in QtWidgets:"
+                if (Test-Path "$includeDir\QtWidgets") {
+                  Get-ChildItem "$includeDir\QtWidgets" | Select-Object Name | Format-Table -AutoSize
+                }
+              }
+            }
+            
+            echo "Available Qt modules:"
+            Get-ChildItem $includeDir -Directory | Where-Object { $_.Name -like "Qt*" } | Select-Object Name
+          } else {
+            echo "[ERROR] Qt include directory not found: $includeDir"
+          }
+          
+          # Verify Qt lib directory
+          $libDir = "$qtPath\lib"
+          if (Test-Path $libDir) {
+            echo "Qt lib directory found: $libDir"
+            echo "Available Qt libraries:"
+            Get-ChildItem $libDir -Include "Qt*.lib" | Select-Object Name
+          } else {
+            echo "[ERROR] Qt lib directory not found: $libDir"
+          }
+          
+          # Create a custom Qt props file for MSBuild if needed
+          $propsContent = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <QtInstall>$qtPath</QtInstall>
+    <QtToolsPath>$qtPath\bin</QtToolsPath>
+    <QtIncludePath>$qtPath\include</QtIncludePath>
+    <QtLibraryPath>$qtPath\lib</QtLibraryPath>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$qtPath\include;$qtPath\include\QtCore;$qtPath\include\QtGui;$qtPath\include\QtWidgets;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$qtPath\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
+"@
+          
+          Set-Content "qt-custom.props" -Value $propsContent
+          echo "Created custom Qt props file: qt-custom.props"
+        } else {
+          echo "Qt installation not found or QTDIR not set"
+          exit 1
+        }
+
+    - name: Copy library binaries to GUI project
+      run: |
+        echo "Copying library binaries to GUI project..."
+        if (Test-Path "library-binaries") {
+          Copy-Item "library-binaries\*" "gui\" -Recurse -Force
+          echo "Library binaries copied successfully"
+        } else {
+          echo "Warning: Library binaries not found"
         }
 
     - name: Build GUI Solution
@@ -336,7 +401,6 @@ jobs:
       run: |
         $platform = "${{ matrix.platform }}"
         $config = "${{ matrix.configuration }}"
-        # Use the same platform naming as in the solution file (x86 instead of Win32)
         $msbuildPlatform = $platform
         
         echo "=== GUI Build Information ==="
@@ -377,7 +441,19 @@ jobs:
         
         echo ""
         echo "Building GUI solution with: Configuration=$config, Platform=$msbuildPlatform"
-        msbuild $solutionFile /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false /m /verbosity:minimal
+        
+        # Add additional MSBuild properties for Qt
+        $additionalProps = "/p:QTDIR=$env:QTDIR"
+        $additionalProps += " /p:QT_INSTALL_PREFIX=$env:QTDIR"
+        $additionalProps += " /p:QT_INSTALL_INCLUDES=$env:QTDIR\include"
+        $additionalProps += " /p:QT_INSTALL_LIBS=$env:QTDIR\lib"
+        
+        if ("$config" -eq "Static") {
+          $additionalProps += " /p:QT_STATIC_BUILD=true"
+        }
+        
+        # Build with verbose output to diagnose Qt issues
+        msbuild $solutionFile /p:Configuration=$config /p:Platform=$msbuildPlatform /p:WholeProgramOptimization=false /p:TreatWarningAsError=false $additionalProps /m /verbosity:normal
 
     - name: List GUI build output
       working-directory: gui
