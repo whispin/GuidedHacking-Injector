@@ -57,11 +57,57 @@ jobs:
         # Create artifact directory
         mkdir -Force "library-artifacts"
         
-        # Find and copy all built files
-        Get-ChildItem -Recurse -Include "*.dll","*.exe" | ForEach-Object {
-          $relativePath = $_.FullName.Replace((Get-Location).Path + "\", "")
-          echo "Found: $relativePath"
-          Copy-Item $_.FullName "library-artifacts\" -Force
+        # Define build output directories to search
+        $searchPaths = @()
+        if ("${{ matrix.platform }}" -eq "x86") {
+          $searchPaths += "GH Injector Library\Win32\${{ matrix.configuration }}"
+          $searchPaths += "GH Injector DNP\Win32\${{ matrix.configuration }}"
+          $searchPaths += "GH Injector SM\GH Injector SM\Win32\${{ matrix.configuration }}"
+          $searchPaths += "Win32\${{ matrix.configuration }}"
+        } else {
+          $searchPaths += "GH Injector Library\x64\${{ matrix.configuration }}"
+          $searchPaths += "GH Injector DNP\x64\${{ matrix.configuration }}"
+          $searchPaths += "GH Injector SM\GH Injector SM\x64\${{ matrix.configuration }}"
+          $searchPaths += "x64\${{ matrix.configuration }}"
+        }
+        
+        # Track copied files to avoid duplicates
+        $copiedFiles = @{}
+        
+        # Search in specific build output directories
+        foreach ($searchPath in $searchPaths) {
+          if (Test-Path $searchPath) {
+            echo "Searching in: $searchPath"
+            Get-ChildItem -Path $searchPath -Include "*.dll","*.exe" -File | ForEach-Object {
+              $fileName = $_.Name
+              $fullPath = $_.FullName
+              
+              # Skip if we already copied this file name
+              if (-not $copiedFiles.ContainsKey($fileName)) {
+                echo "Found: $fullPath"
+                Copy-Item $fullPath "library-artifacts\" -Force
+                $copiedFiles[$fileName] = $true
+              } else {
+                echo "Skipping duplicate: $fullPath"
+              }
+            }
+          }
+        }
+        
+        # Fallback: search for any remaining files not in library-artifacts
+        Get-ChildItem -Recurse -Include "*.dll","*.exe" -File | Where-Object {
+          $_.DirectoryName -notlike "*library-artifacts*" -and
+          ($_.DirectoryName -like "*Release*" -or $_.DirectoryName -like "*Debug*")
+        } | ForEach-Object {
+          $fileName = $_.Name
+          $fullPath = $_.FullName
+          
+          # Skip if we already copied this file name
+          if (-not $copiedFiles.ContainsKey($fileName)) {
+            echo "Found additional: $fullPath"
+            Copy-Item $fullPath "library-artifacts\" -Force
+            $copiedFiles[$fileName] = $true
+          }
         }
         
         echo "Library artifacts directory contents:"
@@ -182,13 +228,55 @@ jobs:
         # Create artifact directory
         mkdir -Force "gui-artifacts"
         
-        # Find and copy GUI executables and DLLs
-        Get-ChildItem -Recurse -Include "*.exe","*.dll" | Where-Object { 
-          $_.DirectoryName -like "*$config*" -or $_.DirectoryName -like "*Release*" -or $_.DirectoryName -like "*Debug*"
+        # Define build output directories to search
+        $searchPaths = @()
+        if ($platform -eq "x86") {
+          $searchPaths += "GH Injector GUI\Win32\$config"
+          $searchPaths += "GH Injector\Win32\$config"
+          $searchPaths += "Win32\$config"
+        } else {
+          $searchPaths += "GH Injector GUI\x64\$config"
+          $searchPaths += "GH Injector\x64\$config"
+          $searchPaths += "x64\$config"
+        }
+        
+        # Track copied files to avoid duplicates
+        $copiedFiles = @{}
+        
+        # Search in specific build output directories
+        foreach ($searchPath in $searchPaths) {
+          if (Test-Path $searchPath) {
+            echo "Searching GUI files in: $searchPath"
+            Get-ChildItem -Path $searchPath -Include "*.exe","*.dll" -File | ForEach-Object {
+              $fileName = $_.Name
+              $fullPath = $_.FullName
+              
+              # Skip if we already copied this file name
+              if (-not $copiedFiles.ContainsKey($fileName)) {
+                echo "Found GUI file: $fullPath"
+                Copy-Item $fullPath "gui-artifacts\" -Force
+                $copiedFiles[$fileName] = $true
+              } else {
+                echo "Skipping duplicate GUI file: $fullPath"
+              }
+            }
+          }
+        }
+        
+        # Fallback: search for any remaining GUI files not in gui-artifacts
+        Get-ChildItem -Recurse -Include "*.exe","*.dll" -File | Where-Object {
+          $_.DirectoryName -notlike "*gui-artifacts*" -and
+          ($_.DirectoryName -like "*$config*" -or $_.DirectoryName -like "*Release*" -or $_.DirectoryName -like "*Debug*")
         } | ForEach-Object {
-          $relativePath = $_.FullName.Replace((Get-Location).Path + "\", "")
-          echo "Found GUI file: $relativePath"
-          Copy-Item $_.FullName "gui-artifacts\" -Force
+          $fileName = $_.Name
+          $fullPath = $_.FullName
+          
+          # Skip if we already copied this file name
+          if (-not $copiedFiles.ContainsKey($fileName)) {
+            echo "Found additional GUI file: $fullPath"
+            Copy-Item $fullPath "gui-artifacts\" -Force
+            $copiedFiles[$fileName] = $true
+          }
         }
         
         # Copy Qt DLLs for non-static builds
@@ -200,8 +288,12 @@ jobs:
             foreach ($dll in $qtDlls) {
               $dllPath = Join-Path $qtBinPath $dll
               if (Test-Path $dllPath) {
-                Copy-Item $dllPath "gui-artifacts\" -Force
-                echo "Copied Qt DLL: $dll"
+                $dllFileName = Split-Path $dllPath -Leaf
+                if (-not $copiedFiles.ContainsKey($dllFileName)) {
+                  Copy-Item $dllPath "gui-artifacts\" -Force
+                  echo "Copied Qt DLL: $dll"
+                  $copiedFiles[$dllFileName] = $true
+                }
               }
             }
           }
