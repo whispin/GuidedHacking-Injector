@@ -366,6 +366,9 @@ jobs:
           $propsContent += "    <QtIncludePath>$qtPath\include</QtIncludePath>" + "`n"
           $propsContent += "    <QtLibraryPath>$qtPath\lib</QtLibraryPath>" + "`n"
           $propsContent += "    <QTDIR>$qtPath</QTDIR>" + "`n"
+          $propsContent += "    <QtUicPath>$qtPath\bin\uic.exe</QtUicPath>" + "`n"
+          $propsContent += "    <QtMocPath>$qtPath\bin\moc.exe</QtMocPath>" + "`n"
+          $propsContent += "    <QtRccPath>$qtPath\bin\rcc.exe</QtRccPath>" + "`n"
           $propsContent += '  </PropertyGroup>' + "`n"
           $propsContent += '  <ItemDefinitionGroup>' + "`n"
           $propsContent += '    <ClCompile>' + "`n"
@@ -393,8 +396,8 @@ jobs:
             echo "Configuring Qt project: $($project.Name)"
             $projectContent = Get-Content $project.FullName -Raw
             
-            # Check if our props file is already imported
-            if ($projectContent -notmatch "qt-custom.props") {
+            # Check if our props file is already imported (more thorough check)
+            if ($projectContent -notmatch "qt-custom\.props") {
               # Find a safe location to add the Import - after the first PropertyGroup but before any ItemGroup or Target
               $safeImportLocation = $false
               
@@ -402,7 +405,7 @@ jobs:
               $propertyGroupEndPattern = '</PropertyGroup>'
               if ($projectContent -match $propertyGroupEndPattern) {
                 $qtImport = "`n  " + '<Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />'
-                $projectContent = $projectContent -replace $propertyGroupEndPattern, ($propertyGroupEndPattern + $qtImport)
+                $projectContent = $projectContent -replace $propertyGroupEndPattern, ($propertyGroupEndPattern + $qtImport), 1
                 $safeImportLocation = $true
               }
               
@@ -411,7 +414,7 @@ jobs:
                 $itemGroupPattern = '(\s*<ItemGroup[^>]*>)'
                 if ($projectContent -match $itemGroupPattern) {
                   $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
-                  $projectContent = $projectContent -replace $itemGroupPattern, ($qtImport + '$1')
+                  $projectContent = $projectContent -replace $itemGroupPattern, ($qtImport + '$1'), 1
                   $safeImportLocation = $true
                 }
               }
@@ -421,7 +424,7 @@ jobs:
                 $targetPattern = '(\s*<Target[^>]*>)'
                 if ($projectContent -match $targetPattern) {
                   $qtImport = '  <Import Project="$(MSBuildProjectDirectory)\..\qt-custom.props" Condition="Exists(''$(MSBuildProjectDirectory)\..\qt-custom.props'')" />' + "`n"
-                  $projectContent = $projectContent -replace $targetPattern, ($qtImport + '$1')
+                  $projectContent = $projectContent -replace $targetPattern, ($qtImport + '$1'), 1
                   $safeImportLocation = $true
                 }
               }
@@ -458,78 +461,133 @@ jobs:
           echo "Warning: Library binaries not found"
         }
 
-    - name: Patch project files for Qt paths
+    - name: Generate Qt UI headers
       working-directory: gui
       run: |
-        echo "=== Patching Project Files for Qt Paths ==="
+        echo "=== Generating Qt UI Headers ==="
         
-        # Find all .vcxproj files that might need Qt
-        $qtProjects = Get-ChildItem -Recurse -Include "*.vcxproj" | Where-Object { 
-          $content = Get-Content $_.FullName -Raw
-          $content -match "Qt" -or $content -match "QApplication" -or $_.Name -like "*GUI*"
-        }
+        # Find all .ui files in the project
+        $uiFiles = Get-ChildItem -Recurse -Include "*.ui"
         
-        foreach ($project in $qtProjects) {
-          echo "Patching project: $($project.Name)"
-          $projectPath = $project.FullName
-          $content = Get-Content $projectPath -Raw
+        if ($uiFiles.Count -eq 0) {
+          echo "No .ui files found in the project"
+        } else {
+          echo "Found $($uiFiles.Count) .ui files:"
+          foreach ($uiFile in $uiFiles) {
+            echo "  $($uiFile.FullName)"
+          }
           
-          # Add Qt include directories to all configurations
-          $qtIncludeDir = $env:QTDIR -replace '\\', '\\'
-          $qtIncludePaths = "$qtIncludeDir\\include;$qtIncludeDir\\include\\QtCore;$qtIncludeDir\\include\\QtGui;$qtIncludeDir\\include\\QtWidgets;$qtIncludeDir\\include\\QtNetwork"
+          # Set up UIC tool path
+          $uicPath = "$env:QTDIR\bin\uic.exe"
+          if (-not (Test-Path $uicPath)) {
+            echo "ERROR: UIC tool not found at $uicPath"
+            echo "Available files in Qt bin directory:"
+            Get-ChildItem "$env:QTDIR\bin" | Select-Object Name
+            exit 1
+          }
           
-          # Find ClCompile sections and add AdditionalIncludeDirectories more safely
-          $clCompilePattern = '(<ClCompile[^>]*>)'
-          if ($content -match $clCompilePattern) {
-            # Add include directories to existing ClCompile sections
-            $includePattern = '(<AdditionalIncludeDirectories>)([^<]*)(</AdditionalIncludeDirectories>)'
-            if ($content -match $includePattern) {
-              # Update existing include directories - check if Qt paths are already there
-              if ($content -notmatch [regex]::Escape($qtIncludePaths)) {
-                $content = $content -replace $includePattern, ('$1' + $qtIncludePaths + ';$2$3')
+          echo "Using UIC tool: $uicPath"
+          
+          # Generate UI headers
+          foreach ($uiFile in $uiFiles) {
+            $uiFileName = $uiFile.BaseName
+            $uiDir = $uiFile.Directory.FullName
+            $headerFileName = "ui_$uiFileName.h"
+            $headerPath = Join-Path $uiDir $headerFileName
+            
+            echo "Generating $headerFileName from $($uiFile.Name)..."
+            
+            try {
+              & $uicPath $uiFile.FullName -o $headerPath
+              if ($LASTEXITCODE -eq 0) {
+                echo "  [OK] Generated $headerPath"
+              } else {
+                echo "  [ERROR] Failed to generate $headerPath (exit code: $LASTEXITCODE)"
               }
+            } catch {
+              echo "  [ERROR] Exception generating $headerPath : $($_.Exception.Message)"
+            }
+          }
+          
+          # Verify generated headers
+          echo ""
+          echo "Verifying generated UI headers:"
+          foreach ($uiFile in $uiFiles) {
+            $uiFileName = $uiFile.BaseName
+            $uiDir = $uiFile.Directory.FullName
+            $headerFileName = "ui_$uiFileName.h"
+            $headerPath = Join-Path $uiDir $headerFileName
+            
+            if (Test-Path $headerPath) {
+              echo "  [OK] $headerFileName exists"
             } else {
-              # Look for ClCompile within ItemDefinitionGroup to add include directories safely
-              $itemDefGroupPattern = '(<ItemDefinitionGroup[^>]*>[\s\S]*?<ClCompile[^>]*>)([\s\S]*?)(</ClCompile>[\s\S]*?</ItemDefinitionGroup>)'
-              if ($content -match $itemDefGroupPattern) {
-                $newIncludeElement = "`n      <AdditionalIncludeDirectories>$qtIncludePaths;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>"
-                $content = $content -replace $itemDefGroupPattern, ('$1' + $newIncludeElement + '$2$3')
-              }
+              echo "  [MISSING] $headerFileName not found"
             }
-          }
-          
-          # Add Qt library directories more safely
-          $qtLibDir = "$qtIncludeDir\\lib"
-          $libPattern = '(<AdditionalLibraryDirectories>)([^<]*)(</AdditionalLibraryDirectories>)'
-          if ($content -match $libPattern) {
-            # Check if Qt lib path is already there
-            if ($content -notmatch [regex]::Escape($qtLibDir)) {
-              $content = $content -replace $libPattern, ('$1' + $qtLibDir + ';$2$3')
-            }
-          }
-          
-          # Add Qt preprocessor definitions more safely
-          $qtDefines = "QT_WIDGETS_LIB;QT_GUI_LIB;QT_CORE_LIB;QT_NETWORK_LIB"
-          $definesPattern = '(<PreprocessorDefinitions>)([^<]*)(</PreprocessorDefinitions>)'
-          if ($content -match $definesPattern) {
-            # Check if Qt defines are already there
-            if ($content -notmatch "QT_WIDGETS_LIB") {
-              $content = $content -replace $definesPattern, ('$1' + $qtDefines + ';$2$3')
-            }
-          }
-          
-          # Validate the modified project file before saving
-          try {
-            $xmlDoc = [xml]$content
-            Set-Content $projectPath -Value $content
-            echo "  Patched $($project.Name) with Qt paths - XML validation passed"
-          } catch {
-            echo "  ERROR: XML validation failed for $($project.Name): $($_.Exception.Message)"
-            echo "  Skipping modifications for this project"
           }
         }
+
+    - name: Generate Qt MOC files
+      working-directory: gui
+      run: |
+        echo "=== Generating Qt MOC Files ==="
         
-        echo "Project patching completed."
+        # Find all header files that might need MOC processing
+        $headerFiles = Get-ChildItem -Recurse -Include "*.h" | Where-Object {
+          $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+          $content -match "Q_OBJECT" -or $content -match "Q_GADGET" -or $content -match "Q_NAMESPACE"
+        }
+        
+        if ($headerFiles.Count -eq 0) {
+          echo "No header files requiring MOC processing found"
+        } else {
+          echo "Found $($headerFiles.Count) header files that may need MOC processing:"
+          foreach ($headerFile in $headerFiles) {
+            echo "  $($headerFile.FullName)"
+          }
+          
+          # Set up MOC tool path
+          $mocTool = "$env:QTDIR\bin\moc.exe"
+          if (-not (Test-Path $mocTool)) {
+            echo "ERROR: MOC tool not found at $mocTool"
+            echo "Available files in Qt bin directory:"
+            Get-ChildItem "$env:QTDIR\bin" | Select-Object Name
+            exit 1
+          }
+          
+          echo "Using MOC tool: $mocTool"
+          
+          # Generate MOC files
+          foreach ($headerFile in $headerFiles) {
+            $headerFileName = $headerFile.BaseName
+            $headerDir = $headerFile.Directory.FullName
+            $mocFileName = "moc_$headerFileName.cpp"
+            $mocPath_output = Join-Path $headerDir $mocFileName
+            
+            echo "Generating $mocFileName from $($headerFile.Name)..."
+            
+            try {
+              $mocArgs = @(
+                $headerFile.FullName
+                "-o"
+                $mocPath_output
+                "-I$env:QTDIR\include"
+                "-I$env:QTDIR\include\QtCore"
+                "-I$env:QTDIR\include\QtGui"
+                "-I$env:QTDIR\include\QtWidgets"
+                "-I$env:QTDIR\include\QtNetwork"
+              )
+              
+              & $mocTool @mocArgs
+              if ($LASTEXITCODE -eq 0) {
+                echo "  [OK] Generated $mocPath_output"
+              } else {
+                echo "  [WARNING] Failed to generate $mocPath_output (exit code: $LASTEXITCODE) - may not be needed"
+              }
+            } catch {
+              echo "  [WARNING] Exception generating $mocPath_output : $($_.Exception.Message) - may not be needed"
+            }
+          }
+        }
 
     - name: Validate project files
       working-directory: gui
@@ -701,6 +759,10 @@ jobs:
           "/p:QtInstall=`"$env:QTDIR`""
           "/p:QtIncludePath=`"$env:QTDIR\include`""
           "/p:QtLibraryPath=`"$env:QTDIR\lib`""
+          "/p:QtToolsPath=`"$env:QTDIR\bin`""
+          "/p:QtUicPath=`"$env:QTDIR\bin\uic.exe`""
+          "/p:QtMocPath=`"$env:QTDIR\bin\moc.exe`""
+          "/p:QtRccPath=`"$env:QTDIR\bin\rcc.exe`""
           "/p:AdditionalIncludeDirectories=`"$qtIncludePaths`""
           "/p:AdditionalLibraryDirectories=`"$qtLibPaths`""
         )
